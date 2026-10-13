@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -88,41 +89,24 @@ func (p *ProxyServer) handleConn(clientConn net.Conn) {
 }
 
 func (p *ProxyServer) dialOut(network, targetAddr string) (net.Conn, error) {
+	// Use custom resolver querying 1.1.1.1:53 so local DNS never blocks proxy requests
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, netw, addr string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 3 * time.Second}
+			return d.DialContext(ctx, "udp", "1.1.1.1:53")
+		},
+	}
+
 	d := &net.Dialer{
-		Timeout: 7 * time.Second,
+		Timeout:  7 * time.Second,
+		Resolver: resolver,
 	}
 
-	// 1. Try binding directly to local tun interface IP
-	ifaces, err := net.Interfaces()
-	if err == nil {
-		for _, iface := range ifaces {
-			if strings.HasPrefix(iface.Name, "tun") {
-				addrs, _ := iface.Addrs()
-				for _, a := range addrs {
-					if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
-						d.LocalAddr = &net.TCPAddr{IP: ipNet.IP}
-						break
-					}
-				}
-				break
-			}
-		}
-	}
-
-	conn, err := d.Dial(network, targetAddr)
-	if err == nil {
-		return conn, nil
-	}
-
-	// 2. Fallback to default dial (uses kernel routing table, which points 0.0.0.0/1 to tun0 via 10.8.0.1)
-	fallbackDialer := &net.Dialer{
-		Timeout: 7 * time.Second,
-	}
-	return fallbackDialer.Dial(network, targetAddr)
+	return d.Dial(network, targetAddr)
 }
 
 func (p *ProxyServer) handleSOCKS5(conn net.Conn, br *bufio.Reader) {
-	// Version identifier / method selection
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(br, header); err != nil {
 		return
@@ -133,9 +117,40 @@ func (p *ProxyServer) handleSOCKS5(conn net.Conn, br *bufio.Reader) {
 		return
 	}
 
-	// Reply: No Auth (0x00)
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
-		return
+	// Support both No-Auth (0x00) and Username/Password (0x02)
+	hasUserPass := false
+	for _, m := range methods {
+		if m == 0x02 {
+			hasUserPass = true
+			break
+		}
+	}
+
+	if hasUserPass {
+		// Negotiate 0x02 (User/Pass subnegotiation, accept any credential)
+		if _, err := conn.Write([]byte{0x05, 0x02}); err != nil {
+			return
+		}
+		// Read auth subnegotiation
+		authVer, err := br.ReadByte()
+		if err != nil || authVer != 0x01 {
+			return
+		}
+		uLen, _ := br.ReadByte()
+		uBuf := make([]byte, uLen)
+		_, _ = io.ReadFull(br, uBuf)
+		pLen, _ := br.ReadByte()
+		pBuf := make([]byte, pLen)
+		_, _ = io.ReadFull(br, pBuf)
+		// Accept auth
+		if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
+			return
+		}
+	} else {
+		// Reply: No Auth (0x00)
+		if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+			return
+		}
 	}
 
 	// Request
@@ -182,7 +197,7 @@ func (p *ProxyServer) handleSOCKS5(conn net.Conn, br *bufio.Reader) {
 	port := int(portBytes[0])<<8 | int(portBytes[1])
 	target := net.JoinHostPort(host, strconv.Itoa(port))
 
-	if cmd != 0x01 { // Only CONNECT is supported
+	if cmd != 0x01 { // Only CONNECT
 		_, _ = conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -248,7 +263,6 @@ func (p *ProxyServer) relay(client net.Conn, br *bufio.Reader, dest net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// client -> dest
 	go func() {
 		defer wg.Done()
 		if br.Buffered() > 0 {
@@ -259,7 +273,6 @@ func (p *ProxyServer) relay(client net.Conn, br *bufio.Reader, dest net.Conn) {
 		_, _ = io.Copy(dest, client)
 	}()
 
-	// dest -> client
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(client, dest)
