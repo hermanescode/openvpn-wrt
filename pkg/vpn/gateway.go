@@ -91,9 +91,15 @@ func SetGatewayEnabled(enable bool, routingMode string, selectiveRoutes []string
 
 		var script strings.Builder
 		script.WriteString(`
-# 1. Kernel IP Forwarding
+# 1. Kernel IP Forwarding and loose reverse-path filtering for policy routing
 sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
+sysctl -w net.ipv4.conf.all.rp_filter=2 2>/dev/null || true
+sysctl -w net.ipv4.conf.default.rp_filter=2 2>/dev/null || true
+for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+    echo 2 > "$i" 2>/dev/null || true
+done
 
 # Find tun device
 TUN_DEV=$(ip -o link show | grep -o 'tun[0-9]*' | head -n1 || echo 'tun0')
@@ -124,7 +130,7 @@ ip route flush cache 2>/dev/null || true
 # Direct static routes for explicit CIDRs/IPs through tun
 %s
 
-# Setup nftables / ipset marks for matching destinations
+# Setup nftables rules for matching destinations
 if command -v nft >/dev/null 2>&1; then
     nft add table inet openvpn_wrt 2>/dev/null || true
     nft flush table inet openvpn_wrt 2>/dev/null || true
@@ -133,12 +139,12 @@ if command -v nft >/dev/null 2>&1; then
 %s
 %s
     # Prerouting: Mark packets destined to selective IPs
-    nft 'add chain inet openvpn_wrt prerouting { type filter hook prerouting priority -150; policy accept; }'
+    nft 'add chain inet openvpn_wrt prerouting { type filter hook prerouting priority mangle; policy accept; }'
     nft 'add rule inet openvpn_wrt prerouting ip daddr @blocked_ips drop'
-    nft 'add rule inet openvpn_wrt prerouting iifname "br-lan" ip daddr @vpn_routed_ips mark set 0x55'
+    nft 'add rule inet openvpn_wrt prerouting ip daddr @vpn_routed_ips mark set 0x55'
 
     # Forwarding & NAT for tun
-    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
+    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority 0; policy accept; }'
     nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
     nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
 
@@ -148,6 +154,7 @@ if command -v nft >/dev/null 2>&1; then
     nft 'add chain inet openvpn_wrt mangle_forward { type filter hook forward priority mangle; policy accept; }'
     nft 'add rule inet openvpn_wrt mangle_forward oifname "tun+" tcp flags syn tcp option maxseg size set rt mtu'
 elif command -v iptables >/dev/null 2>&1; then
+    # iptables fallback
     iptables -t mangle -D PREROUTING -m set --match-set vpn_routed_ips dst -j MARK --set-mark 0x55 2>/dev/null || true
     iptables -t mangle -A PREROUTING -m set --match-set vpn_routed_ips dst -j MARK --set-mark 0x55
 
@@ -186,7 +193,7 @@ fi
 if command -v nft >/dev/null 2>&1; then
     nft add table inet openvpn_wrt 2>/dev/null || true
     nft flush table inet openvpn_wrt 2>/dev/null || true
-    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
+    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority 0; policy accept; }'
     nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
     nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
     nft 'add rule inet openvpn_wrt forward iifname "br-lan" oifname "tun+" accept'
