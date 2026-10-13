@@ -46,6 +46,7 @@ type StatusDTO struct {
 	ConnectedAt   string          `json:"connected_at"`
 	UptimeSeconds int64           `json:"uptime_seconds"`
 	GatewayMode   bool            `json:"gateway_mode"`
+	RoutingMode   string          `json:"routing_mode"`
 	KillSwitch    bool            `json:"kill_switch"`
 	LastError     string          `json:"last_error,omitempty"`
 }
@@ -233,11 +234,11 @@ func (m *VPNManager) analyzeLogLine(line string) {
 			go func() {
 				// Wait 1 second for tun interface to fully initialize routing
 				time.Sleep(1 * time.Second)
-				_, err := SetGatewayEnabled(true, cfg.KillSwitch)
+				_, err := SetGatewayEnabled(true, cfg.RoutingMode, cfg.SelectiveRoutes, cfg.BlockedDestinations, cfg.KillSwitch)
 				if err != nil {
 					m.AddLog("Warning: Failed to apply gateway routing rules: " + err.Error())
 				} else {
-					m.AddLog("Gateway firewall rules applied: Wi-Fi and LAN traffic routed via tun+")
+					m.AddLog(fmt.Sprintf("Gateway firewall rules applied (%s mode): Wi-Fi and LAN traffic active", cfg.RoutingMode))
 				}
 			}()
 		}
@@ -329,6 +330,7 @@ func (m *VPNManager) GetStatus() StatusDTO {
 		ConnectedAt:   connAtStr,
 		UptimeSeconds: uptime,
 		GatewayMode:   cfg.GatewayMode,
+		RoutingMode:   cfg.RoutingMode,
 		KillSwitch:    cfg.KillSwitch,
 		LastError:     lastErr,
 	}

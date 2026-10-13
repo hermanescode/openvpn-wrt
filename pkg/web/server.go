@@ -6,11 +6,15 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +30,7 @@ type Server struct {
 	cfg        *config.Config
 	manager    *vpn.VPNManager
 	srv        *http.Server
+	actualAddr string
 	sessions   map[string]time.Time
 	sessionsMu sync.RWMutex
 }
@@ -53,6 +58,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/logs/clear", s.handleLogsClear)
 	mux.HandleFunc("/api/myip", s.handleMyIP)
 	mux.HandleFunc("/api/ping", s.handlePing)
+	mux.HandleFunc("/api/rules", s.handleRules)
 
 	// VPN Control & Configuration endpoints (Requires Auth if password is set)
 	mux.HandleFunc("/api/connect", s.authMiddleware(s.handleConnect))
@@ -80,13 +86,44 @@ func (s *Server) Start() error {
 	})
 
 	s.srv = &http.Server{
-		Addr:         s.cfg.Get().WebListen,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
 
-	return s.srv.ListenAndServe()
+	// Automatic port fallback detection if preferred port (e.g. 8085) is already occupied
+	ln, boundAddr, err := s.findListener(s.cfg.Get().WebListen)
+	if err != nil {
+		return err
+	}
+	s.actualAddr = boundAddr
+
+	// Store actual port for scripts
+	_ = os.WriteFile("/tmp/openvpn-wrt.port", []byte(boundAddr), 0644)
+	fmt.Printf("Web Dashboard successfully bound to http://0.0.0.0%s\n", boundAddr)
+
+	return s.srv.Serve(ln)
+}
+
+func (s *Server) findListener(requested string) (net.Listener, string, error) {
+	host, portStr, err := net.SplitHostPort(requested)
+	if err != nil {
+		host = ""
+		portStr = strings.TrimPrefix(requested, ":")
+	}
+	basePort, err := strconv.Atoi(portStr)
+	if err != nil || basePort <= 0 {
+		basePort = 8085
+	}
+
+	for p := basePort; p <= basePort+15; p++ {
+		testAddr := fmt.Sprintf("%s:%d", host, p)
+		l, err := net.Listen("tcp", testAddr)
+		if err == nil {
+			return l, fmt.Sprintf(":%d", p), nil
+		}
+	}
+	return nil, "", fmt.Errorf("could not bind to any port between %d and %d", basePort, basePort+15)
 }
 
 func (s *Server) Shutdown() error {
@@ -277,11 +314,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"status": dto,
 		"system": map[string]any{
-			"os":         runtime.GOOS,
-			"arch":       runtime.GOARCH,
-			"goroutines": runtime.NumGoroutine(),
-			"alloc_mb":   float64(m.Alloc) / 1024 / 1024,
-			"sys_mb":     float64(m.Sys) / 1024 / 1024,
+			"os":          runtime.GOOS,
+			"arch":        runtime.GOARCH,
+			"goroutines":  runtime.NumGoroutine(),
+			"alloc_mb":    float64(m.Alloc) / 1024 / 1024,
+			"sys_mb":      float64(m.Sys) / 1024 / 1024,
+			"active_port": s.actualAddr,
 		},
 		"auth": map[string]any{
 			"password_required": s.cfg.Get().WebPassword != "",
@@ -369,13 +407,12 @@ func (s *Server) handleProfileUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Support both multipart file upload and JSON body
 	contentType := r.Header.Get("Content-Type")
 	var filename string
 	var content []byte
 
 	if strings.Contains(contentType, "multipart/form-data") {
-		err := r.ParseMultipartForm(10 << 20) // 10MB max
+		err := r.ParseMultipartForm(10 << 20)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -461,8 +498,9 @@ func (s *Server) handleGatewayToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Enable     *bool `json:"enable"`
-		KillSwitch *bool `json:"kill_switch"`
+		Enable      *bool   `json:"enable"`
+		RoutingMode *string `json:"routing_mode"`
+		KillSwitch  *bool   `json:"kill_switch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -474,15 +512,20 @@ func (s *Server) handleGatewayToggle(w http.ResponseWriter, r *http.Request) {
 	if req.Enable != nil {
 		newEnable = *req.Enable
 	}
+	newRoutingMode := cfg.RoutingMode
+	if req.RoutingMode != nil {
+		newRoutingMode = *req.RoutingMode
+	}
 	newKillSwitch := cfg.KillSwitch
 	if req.KillSwitch != nil {
 		newKillSwitch = *req.KillSwitch
 	}
 
-	out, err := vpn.SetGatewayEnabled(newEnable, newKillSwitch)
+	out, err := vpn.SetGatewayEnabled(newEnable, newRoutingMode, cfg.SelectiveRoutes, cfg.BlockedDestinations, newKillSwitch)
 	if err == nil {
 		_ = s.cfg.Update(func(c *config.Config) {
 			c.GatewayMode = newEnable
+			c.RoutingMode = newRoutingMode
 			c.KillSwitch = newKillSwitch
 		})
 	}
@@ -493,11 +536,70 @@ func (s *Server) handleGatewayToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"success":     true,
-		"enabled":     newEnable,
-		"kill_switch": newKillSwitch,
-		"output":      out,
+		"success":      true,
+		"enabled":      newEnable,
+		"routing_mode": newRoutingMode,
+		"kill_switch":  newKillSwitch,
+		"output":       out,
 	})
+}
+
+func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "application/json")
+		cfg := s.cfg.Get()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"routing_mode":         cfg.RoutingMode,
+			"selective_routes":     cfg.SelectiveRoutes,
+			"blocked_destinations": cfg.BlockedDestinations,
+		})
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		if !s.isAuthenticated(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var req struct {
+			RoutingMode         *string   `json:"routing_mode"`
+			SelectiveRoutes     *[]string `json:"selective_routes"`
+			BlockedDestinations *[]string `json:"blocked_destinations"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		err := s.cfg.Update(func(c *config.Config) {
+			if req.RoutingMode != nil {
+				c.RoutingMode = *req.RoutingMode
+			}
+			if req.SelectiveRoutes != nil {
+				c.SelectiveRoutes = *req.SelectiveRoutes
+			}
+			if req.BlockedDestinations != nil {
+				c.BlockedDestinations = *req.BlockedDestinations
+			}
+		})
+
+		cfg := s.cfg.Get()
+		// Reapply rules immediately if gateway mode is on
+		if cfg.GatewayMode {
+			_, _ = vpn.SetGatewayEnabled(true, cfg.RoutingMode, cfg.SelectiveRoutes, cfg.BlockedDestinations, cfg.KillSwitch)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {

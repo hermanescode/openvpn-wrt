@@ -10,7 +10,12 @@
 - **🌐 Whole-Router / Wi-Fi Gateway Routing**:
   - Automatically configures OpenWrt firewall NAT (Masquerade) and LAN forwarding so all connected devices (phones, PCs, smart TVs) route through OpenVPN without manual iptables/nftables headaches.
   - Native support for both **OpenWrt 22+/24+ `nftables` (fw4)** and **legacy `iptables` (fw3)**.
+  - **🎯 Selective Routing / Split Tunneling**: Route only designated domains, wildcards, regex patterns, or IPs/CIDRs through OpenVPN while regular traffic bypasses directly through WAN!
+  - **🚫 Destination Blocking**: Sinkhole unwanted domains (DNS to `0.0.0.0`) and drop unwanted IPs at firewall level.
   - **🛡️ Kill Switch**: Optional toggle to block non-local LAN egress if the VPN disconnects.
+- **🔌 Dynamic Port Detection & Non-Conflicting Default**:
+  - Default port set to `:8085` (leaving `:8080` free for FoxyVPN).
+  - Automatic port fallback: if `:8085` is in use, automatically binds `:8086`, `:8087`, etc.
 - **🔐 Password Protected Web Panel**:
   - Constant-time password comparison (`subtle.ConstantTimeCompare`).
   - Safe status polling pattern (no frozen UI / false-logout traps).
@@ -102,15 +107,16 @@ chmod +x /usr/bin/openvpn-wrt
 
 Once installed, open your browser and navigate to:
 ```
-http://<router-ip>:8080
+http://<router-ip>:8085
 ```
-*(e.g., `http://192.168.1.1:8080`)*
+*(e.g., `http://192.168.1.1:8085`)*
 
+- **Default Port**: `:8085` (if 8085 is in use, automatically steps to 8086, 8087, ...).
 - **Default Password**: `admin` (changeable in Settings ⚙️).
 - **Connect / Disconnect**: Tap **⚡ Connect** or **🛑 Disconnect**.
 - **Whole-Router Wi-Fi Mode**: Toggle the switch **Whole-Router Wi-Fi / LAN Gateway Mode** to instantly route all connected devices through the VPN.
-- **Profiles**: Click **Use** next to any profile, or tap **+ Upload / Add** to upload new `.ovpn` files.
-- **Diagnostics**: Use **🔄** next to Public IP to test external connectivity, or tap **📶 Ping Test** to check latency to `1.1.1.1` or `8.8.8.8`.
+- **Selective Routing (Split Tunneling)**: Switch between **Full Tunnel** and **Selective Routing**. Add domains (`*.googlevideo.com`, `t.me`), regexes (`.*\.netflix\.com`), or IPs (`1.1.1.1`).
+- **Destination Blocking**: Add unwanted domains or IPs to block them network-wide.
 
 ---
 

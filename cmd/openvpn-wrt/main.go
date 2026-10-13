@@ -52,7 +52,7 @@ func main() {
 		fmt.Println("\nReceived shutdown signal. Cleaning up...")
 		_ = vpnMgr.Disconnect()
 		if !cfg.Get().KillSwitch {
-			_, _ = vpn.SetGatewayEnabled(false, false)
+			_, _ = vpn.SetGatewayEnabled(false, "", nil, nil, false)
 		}
 		_ = webSrv.Shutdown()
 		os.Exit(0)

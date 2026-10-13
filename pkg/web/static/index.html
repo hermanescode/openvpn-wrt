@@ -31,6 +31,7 @@
         </div>
         <div class="header-right">
             <div id="sysMetrics" class="sys-metrics">
+                <span id="sysPort" class="badge badge-port">:8085</span>
                 <span id="sysArch" class="badge">ARMv7</span>
                 <span id="sysMem" class="badge">RAM: -- MB</span>
             </div>
@@ -84,7 +85,7 @@
             <div class="gateway-header">
                 <div>
                     <h3>🌐 Whole-Router Wi-Fi / LAN Gateway Mode</h3>
-                    <p class="muted">Direct all phones, laptops, and smart TVs connected to this router through the OpenVPN tunnel via NAT/Masquerade.</p>
+                    <p class="muted">Forward all traffic from devices connected to Google Wifi through OpenVPN via NAT/Masquerade.</p>
                 </div>
                 <label class="switch">
                     <input type="checkbox" id="gatewayToggle">
@@ -95,10 +96,70 @@
                 <div class="killswitch-option">
                     <label class="checkbox-label">
                         <input type="checkbox" id="killswitchToggle">
-                        <span>🛡️ Kill Switch (Block traffic if VPN disconnects)</span>
+                        <span>🛡️ Kill Switch (Block internet if VPN disconnects)</span>
                     </label>
                 </div>
                 <div id="gatewayRuleBadge" class="badge badge-success">Firewall: Ready</div>
+            </div>
+        </section>
+
+        <!-- SELECTIVE ROUTING & DESTINATION RULES -->
+        <section class="card rules-card">
+            <div class="card-header">
+                <div>
+                    <h3>🎯 Selective Routing & Destination Filtering (Split Tunneling)</h3>
+                    <p class="muted">Choose whether to route ALL traffic, or only specific domains/IPs/regex patterns through OpenVPN, while regular traffic stays direct.</p>
+                </div>
+                <button id="btnSaveRules" class="btn btn-primary btn-sm">💾 Save & Apply Rules</button>
+            </div>
+
+            <div class="routing-mode-selector">
+                <label class="radio-label">
+                    <input type="radio" name="routingMode" value="full" checked id="modeFull">
+                    <span><strong>Full Tunnel</strong> (تمام ترافیک روتر از OpenVPN رد شود)</span>
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="routingMode" value="selective" id="modeSelective">
+                    <span><strong>Selective Routing</strong> (فقط مقصدهای زیر از OpenVPN رد شوند و بقیه عادی بروند)</span>
+                </label>
+            </div>
+
+            <div class="grid layout-grid mt-3">
+                <!-- SELECTIVE VPN ROUTES -->
+                <div>
+                    <div class="rules-box-header">
+                        <label><strong>🌐 Route Through OpenVPN (مقصدهای عبوری از وی‌پی‌ان):</strong></label>
+                        <span class="badge">Domains / IPs / CIDRs</span>
+                    </div>
+                    <textarea id="selectiveRoutesInput" rows="7" placeholder="youtube.com&#10;*.googlevideo.com&#10;twitter.com&#10;x.com&#10;t.me&#10;telegram.org&#10;instagram.com&#10;1.1.1.1&#10;142.250.0.0/16"></textarea>
+                    <div class="guide-box">
+                        <strong>راهنما و مثال‌های معتبر:</strong>
+                        <ul>
+                            <li>دامنه ساده یا ساب‌دامین: <code>youtube.com</code> یا <code>t.me</code></li>
+                            <li>تمامی ساب‌دامین‌ها: <code>*.googlevideo.com</code></li>
+                            <li>آی‌پی تکی یا رنج شبکه: <code>1.1.1.1</code> یا <code>142.250.0.0/16</code></li>
+                            <li>پترن‌های ریجکس: <code>.*\.netflix\.com</code></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- BLOCKED DESTINATIONS -->
+                <div>
+                    <div class="rules-box-header">
+                        <label><strong>🚫 Blocked Destinations (مقصدهای مسدود شده در کل شبکه):</strong></label>
+                        <span class="badge badge-danger">Sinkhole + Drop</span>
+                    </div>
+                    <textarea id="blockedRoutesInput" rows="7" placeholder="ads.example.com&#10;tracking.domain.com&#10;198.51.100.1"></textarea>
+                    <div class="guide-box">
+                        <strong>راهنمای بلاک لیست:</strong>
+                        <p class="muted">دامنه‌ها بلافاصله در سطح DNS روتر به 0.0.0.0 مپ شده و آی‌پی‌ها در فایروال Drop می‌شوند.</p>
+                        <ul>
+                            <li>تبلیغات و ترکرها: <code>doubleclick.net</code></li>
+                            <li>سایت‌ها یا سرورهای ناخواسته: <code>tiktokv.com</code></li>
+                            <li>آی‌پی‌های مشکوک: <code>203.0.113.5</code></li>
+                        </ul>
+                    </div>
+                </div>
             </div>
         </section>
 

@@ -2,7 +2,10 @@ package vpn
 
 import (
 	"fmt"
+	"net"
+	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -21,12 +24,70 @@ fi
 	return strings.TrimSpace(string(out)) == "1" && err == nil
 }
 
+type ParsedRoutes struct {
+	IPs     []string
+	Domains []string
+	Regexes []string
+}
+
+func parseRouteEntries(entries []string) ParsedRoutes {
+	var pr ParsedRoutes
+	for _, raw := range entries {
+		item := strings.TrimSpace(raw)
+		if item == "" || strings.HasPrefix(item, "#") {
+			continue
+		}
+
+		// Check if CIDR or IP
+		if _, _, err := net.ParseCIDR(item); err == nil {
+			pr.IPs = append(pr.IPs, item)
+			continue
+		}
+		if ip := net.ParseIP(item); ip != nil {
+			pr.IPs = append(pr.IPs, item)
+			continue
+		}
+
+		// Check if regex (contains symbols like ^, $, .*, |, etc.)
+		if strings.ContainsAny(item, `^$|[]()+?`) {
+			if _, err := regexp.Compile(item); err == nil {
+				pr.Regexes = append(pr.Regexes, item)
+				continue
+			}
+		}
+
+		// Clean domain
+		cleanDomain := strings.TrimPrefix(item, "*.")
+		cleanDomain = strings.TrimPrefix(cleanDomain, ".")
+		pr.Domains = append(pr.Domains, cleanDomain)
+
+		// Perform proactive DNS resolution to populate initial IPs
+		if ips, err := net.LookupIP(cleanDomain); err == nil {
+			for _, ip := range ips {
+				if ip4 := ip.To4(); ip4 != nil {
+					pr.IPs = append(pr.IPs, ip4.String())
+				}
+			}
+		}
+	}
+	return pr
+}
+
 // SetGatewayEnabled configures or clears the OpenWrt firewall rules to route
-// all router & Wi-Fi LAN clients through the OpenVPN tun interface with NAT/Masquerade.
-func SetGatewayEnabled(enable bool, killSwitch bool) (string, error) {
+// router & Wi-Fi LAN clients through OpenVPN, supporting Full Tunnel and Selective Routing.
+func SetGatewayEnabled(enable bool, routingMode string, selectiveRoutes []string, blockedRoutes []string, killSwitch bool) (string, error) {
 	if enable {
-		// Enable IP forwarding in kernel
 		_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
+
+		sel := parseRouteEntries(selectiveRoutes)
+		blk := parseRouteEntries(blockedRoutes)
+
+		// 1. Setup dnsmasq rules for domain set population & domain blocking
+		_ = setupDnsmasq(sel.Domains, blk.Domains)
+
+		// 2. Build NFT elements
+		nftBlockedIPs := formatNFTSetElements(blk.IPs)
+		nftSelectiveIPs := formatNFTSetElements(sel.IPs)
 
 		ksRuleNft := ""
 		ksRuleIpt := ""
@@ -39,15 +100,59 @@ func SetGatewayEnabled(enable bool, killSwitch bool) (string, error) {
 `
 		}
 
+		// Selective vs Full mode firewall rules
+		routingLogicNft := ""
+		routingLogicIpt := ""
+
+		if routingMode == "selective" {
+			routingLogicNft = fmt.Sprintf(`
+    # Selective Mode: Only traffic matching @vpn_routed_ips routes via tun+
+    nft 'add chain inet openvpn_wrt prerouting { type filter hook prerouting priority -150; policy accept; }'
+    nft 'add rule inet openvpn_wrt prerouting iifname "br-lan" ip daddr @vpn_routed_ips mark set 0x55'
+    nft 'add rule inet openvpn_wrt forward ip daddr @vpn_routed_ips oifname "tun+" accept'
+    ip rule add fwmark 0x55 table 100 2>/dev/null || true
+    ip route add default dev $(ip -o link show | grep -o 'tun[0-9]*' | head -n1 || echo 'tun0') table 100 2>/dev/null || true
+`)
+			routingLogicIpt = `
+    # Selective Mode with iptables
+    iptables -t filter -A OPENVPN_WRT_FWD -m set --match-set vpn_routed_ips dst -o tun+ -j ACCEPT
+`
+		} else {
+			// Full Tunnel mode
+			routingLogicNft = `
+    # Full Tunnel: All non-local traffic forward to tun+
+    nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
+`
+			routingLogicIpt = `
+    iptables -t filter -A OPENVPN_WRT_FWD -o tun+ -j ACCEPT
+`
+		}
+
 		cmd := fmt.Sprintf(`
 if command -v nft >/dev/null 2>&1; then
     nft add table inet openvpn_wrt 2>/dev/null || true
     nft flush table inet openvpn_wrt 2>/dev/null || true
-    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
-    nft 'add rule inet openvpn_wrt forward ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return'
-    nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
-    nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
+
+    # Sets
+    nft 'add set inet openvpn_wrt blocked_ips { type ipv4_addr; flags interval; }'
+    nft 'add set inet openvpn_wrt vpn_routed_ips { type ipv4_addr; flags interval; }'
 %s
+%s
+
+    # Forward chain
+    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
+    
+    # 1. Blocked destinations drop rule
+    nft 'add rule inet openvpn_wrt forward ip daddr @blocked_ips drop'
+
+    # 2. Local LAN exemptions
+    nft 'add rule inet openvpn_wrt forward ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return'
+    nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
+
+%s
+%s
+
+    # Postrouting NAT
     nft 'add chain inet openvpn_wrt postrouting { type nat hook postrouting priority 100; policy accept; }'
     nft 'add rule inet openvpn_wrt postrouting oifname "tun+" masquerade'
     echo "nftables rules applied successfully"
@@ -65,9 +170,11 @@ elif command -v iptables >/dev/null 2>&1; then
     iptables -t filter -A OPENVPN_WRT_FWD -d 127.0.0.0/8 -j RETURN
     iptables -t filter -A OPENVPN_WRT_FWD -d 172.16.0.0/12 -j RETURN
     iptables -t filter -A OPENVPN_WRT_FWD -d 192.168.0.0/16 -j RETURN
-    iptables -t filter -A OPENVPN_WRT_FWD -o tun+ -j ACCEPT
     iptables -t filter -A OPENVPN_WRT_FWD -i tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
+
 %s
+%s
+
     iptables -t filter -D FORWARD -j OPENVPN_WRT_FWD 2>/dev/null || true
     iptables -t filter -I FORWARD 1 -j OPENVPN_WRT_FWD
     echo "iptables rules applied successfully"
@@ -75,11 +182,16 @@ else
     echo "Neither nft nor iptables found"
     exit 1
 fi
-`, ksRuleNft, ksRuleIpt)
+`, nftBlockedIPs, nftSelectiveIPs, ksRuleNft, routingLogicNft, ksRuleIpt, routingLogicIpt)
 
 		out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
 		return string(out), err
 	}
+
+	// Teardown
+	_ = os.Remove("/tmp/dnsmasq.d/openvpn_wrt.conf")
+	_ = exec.Command("sh", "-c", "killall -HUP dnsmasq 2>/dev/null || true").Run()
+	_ = exec.Command("sh", "-c", "ip rule del fwmark 0x55 table 100 2>/dev/null || true").Run()
 
 	cmd := `
 if command -v nft >/dev/null 2>&1; then
@@ -98,4 +210,57 @@ fi
 `
 	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
 	return string(out), err
+}
+
+func formatNFTSetElements(ips []string) string {
+	if len(ips) == 0 {
+		return ""
+	}
+	var valid []string
+	seen := make(map[string]bool)
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip != "" && !seen[ip] {
+			seen[ip] = true
+			valid = append(valid, ip)
+		}
+	}
+	if len(valid) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("    nft 'add element inet openvpn_wrt vpn_routed_ips { %s }' 2>/dev/null || true", strings.Join(valid, ", "))
+}
+
+func setupDnsmasq(selectiveDomains []string, blockedDomains []string) error {
+	dir := "/tmp/dnsmasq.d"
+	_ = os.MkdirAll(dir, 0755)
+
+	var sb strings.Builder
+	sb.WriteString("# Generated by openvpn-wrt\n")
+
+	// Blocked domains return 0.0.0.0
+	for _, d := range blockedDomains {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			sb.WriteString(fmt.Sprintf("address=/%s/0.0.0.0\n", d))
+		}
+	}
+
+	// Selective domains populate nftset / ipset
+	for _, d := range selectiveDomains {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			sb.WriteString(fmt.Sprintf("nftset=/%s/4#inet#openvpn_wrt#vpn_routed_ips\n", d))
+			sb.WriteString(fmt.Sprintf("ipset=/%s/vpn_routed_ips\n", d))
+		}
+	}
+
+	confPath := "/tmp/dnsmasq.d/openvpn_wrt.conf"
+	if err := os.WriteFile(confPath, []byte(sb.String()), 0644); err != nil {
+		return err
+	}
+
+	// Reload dnsmasq gracefully
+	_ = exec.Command("sh", "-c", "/etc/init.d/dnsmasq reload 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true").Run()
+	return nil
 }

@@ -99,10 +99,17 @@ const btnCheckIP = document.getElementById('btnCheckIP');
 
 const sysArch = document.getElementById('sysArch');
 const sysMem = document.getElementById('sysMem');
+const sysPort = document.getElementById('sysPort');
 
 const gatewayToggle = document.getElementById('gatewayToggle');
 const killswitchToggle = document.getElementById('killswitchToggle');
 const gatewayRuleBadge = document.getElementById('gatewayRuleBadge');
+
+const modeFull = document.getElementById('modeFull');
+const modeSelective = document.getElementById('modeSelective');
+const selectiveRoutesInput = document.getElementById('selectiveRoutesInput');
+const blockedRoutesInput = document.getElementById('blockedRoutesInput');
+const btnSaveRules = document.getElementById('btnSaveRules');
 
 const profileList = document.getElementById('profileList');
 const logConsole = document.getElementById('logConsole');
@@ -211,6 +218,9 @@ async function refreshStatus() {
     if (data.system) {
         sysArch.innerText = (data.system.arch || 'arm').toUpperCase();
         sysMem.innerText = 'Alloc: ' + (data.system.alloc_mb || 0).toFixed(1) + ' MB';
+        if (data.system.active_port) {
+            sysPort.innerText = data.system.active_port;
+        }
     }
 
     if (data.auth) {
@@ -499,6 +509,50 @@ settingsForm.addEventListener('submit', async (e) => {
     alert('Settings saved successfully.');
 });
 
+// Rules & Split Tunneling
+async function refreshRules() {
+    const data = await apiCall('/api/rules');
+    if (!data) return;
+
+    if (data.routing_mode === 'selective') {
+        modeSelective.checked = true;
+    } else {
+        modeFull.checked = true;
+    }
+
+    if (data.selective_routes) {
+        selectiveRoutesInput.value = data.selective_routes.join('\n');
+    }
+    if (data.blocked_destinations) {
+        blockedRoutesInput.value = data.blocked_destinations.join('\n');
+    }
+}
+
+btnSaveRules.addEventListener('click', async () => {
+    btnSaveRules.disabled = true;
+    btnSaveRules.innerText = 'Applying...';
+
+    const mode = modeSelective.checked ? 'selective' : 'full';
+    const selective = selectiveRoutesInput.value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+    const blocked = blockedRoutesInput.value.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+
+    const res = await apiCall('/api/rules', 'POST', {
+        routing_mode: mode,
+        selective_routes: selective,
+        blocked_destinations: blocked
+    });
+
+    btnSaveRules.disabled = false;
+    btnSaveRules.innerText = '💾 Save & Apply Rules';
+
+    if (res.success) {
+        alert('Routing rules applied successfully!');
+        refreshStatus();
+    } else {
+        alert('Failed to apply rules: ' + (res.error || 'Unknown error'));
+    }
+});
+
 // Helper Escape HTML
 function escapeHtml(text) {
     const div = document.createElement('div');
@@ -511,6 +565,7 @@ function refreshAll() {
     refreshStatus();
     refreshProfiles();
     refreshLogs();
+    refreshRules();
 }
 
 refreshAll();

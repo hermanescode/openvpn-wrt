@@ -76,12 +76,15 @@ fi
 if [ ! -f "$CONF_DIR/config.json" ]; then
     cat << 'EOF' > "$CONF_DIR/config.json"
 {
-  "web_listen": ":8080",
+  "web_listen": ":8085",
   "web_password": "admin",
   "active_profile": "",
   "configs_dir": "/etc/openvpn-wrt/configs",
   "auto_connect": true,
   "gateway_mode": true,
+  "routing_mode": "full",
+  "selective_routes": ["youtube.com", "*.googlevideo.com", "twitter.com", "x.com", "t.me", "telegram.org", "instagram.com", "1.1.1.1", "8.8.8.8"],
+  "blocked_destinations": [],
   "kill_switch": false,
   "custom_dns": "1.1.1.1,8.8.8.8",
   "log_level": "info"
@@ -131,8 +134,10 @@ chmod +x "$INIT_DIR/openvpn-wrt"
 
 ROUTER_IP=$(ip -4 addr show br-lan 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || echo "192.168.1.1")
 
+PORT=$(cat /tmp/openvpn-wrt.port 2>/dev/null || echo ":8085")
 echo "===================================================="
 echo "✅ OpenVPN-WRT Gateway installed and running!"
-echo "Web Dashboard: http://$ROUTER_IP:8080"
+echo "Web Dashboard: http://$ROUTER_IP$PORT"
 echo "Default Password: admin"
+echo "(If 8085 was busy, next available port was auto-selected)"
 echo "===================================================="
