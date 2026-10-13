@@ -92,7 +92,7 @@ func (p *ProxyServer) dialOut(network, targetAddr string) (net.Conn, error) {
 		Timeout: 7 * time.Second,
 	}
 
-	// Try binding to tun0 if up
+	// 1. Try binding directly to local tun interface IP
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
@@ -109,7 +109,16 @@ func (p *ProxyServer) dialOut(network, targetAddr string) (net.Conn, error) {
 		}
 	}
 
-	return d.Dial(network, targetAddr)
+	conn, err := d.Dial(network, targetAddr)
+	if err == nil {
+		return conn, nil
+	}
+
+	// 2. Fallback to default dial (uses kernel routing table, which points 0.0.0.0/1 to tun0 via 10.8.0.1)
+	fallbackDialer := &net.Dialer{
+		Timeout: 7 * time.Second,
+	}
+	return fallbackDialer.Dial(network, targetAddr)
 }
 
 func (p *ProxyServer) handleSOCKS5(conn net.Conn, br *bufio.Reader) {
