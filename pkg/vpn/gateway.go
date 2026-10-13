@@ -144,6 +144,9 @@ if command -v nft >/dev/null 2>&1; then
 %s
 %s
 
+    # Ensure IP forwarding
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
     # Forward chain
     nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
     
@@ -153,6 +156,7 @@ if command -v nft >/dev/null 2>&1; then
     # 2. Local LAN exemptions
     nft 'add rule inet openvpn_wrt forward ip daddr { 0.0.0.0/8, 10.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return'
     nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
+    nft 'add rule inet openvpn_wrt forward iifname "br-lan" oifname "tun+" accept'
 
 %s
 %s
@@ -196,6 +200,7 @@ elif command -v iptables >/dev/null 2>&1; then
     iptables -t filter -A OPENVPN_WRT_FWD -d 172.16.0.0/12 -j RETURN
     iptables -t filter -A OPENVPN_WRT_FWD -d 192.168.0.0/16 -j RETURN
     iptables -t filter -A OPENVPN_WRT_FWD -i tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -t filter -A OPENVPN_WRT_FWD -i br-lan -o tun+ -j ACCEPT
 
 %s
 %s
