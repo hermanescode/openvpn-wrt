@@ -1,0 +1,4 @@
+/openvpn-wrt
+dist/
+*.log
+*.pid

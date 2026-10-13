@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenVPN OpenWrt Gateway</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="loginOverlay" class="modal-overlay hidden">
+        <div class="modal card">
+            <div class="modal-header">
+                <h2>🔐 Admin Authentication</h2>
+            </div>
+            <p class="muted">Enter web dashboard password to manage router VPN.</p>
+            <form id="loginForm">
+                <input type="password" id="loginPassword" placeholder="Password" required autofocus>
+                <div id="loginError" class="error-msg hidden"></div>
+                <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+            </form>
+        </div>
+    </div>
+
+    <header class="navbar">
+        <div class="brand">
+            <span class="logo-icon">🛡️</span>
+            <div>
+                <h1>OpenVPN-WRT</h1>
+                <span class="subbrand">Google Wifi AC1304 Gateway</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <div id="sysMetrics" class="sys-metrics">
+                <span id="sysArch" class="badge">ARMv7</span>
+                <span id="sysMem" class="badge">RAM: -- MB</span>
+            </div>
+            <button id="btnSettings" class="btn btn-outline btn-sm">⚙️ Settings</button>
+            <button id="btnLogout" class="btn btn-outline btn-sm hidden">Logout</button>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- HERO STATUS CARD -->
+        <section class="card status-card">
+            <div class="status-header">
+                <div class="state-indicator">
+                    <span id="statusDot" class="status-dot disconnected"></span>
+                    <div>
+                        <span id="statusText" class="status-title">DISCONNECTED</span>
+                        <div id="profileSummary" class="status-subtitle">No active profile</div>
+                    </div>
+                </div>
+                <div class="action-buttons">
+                    <button id="btnConnect" class="btn btn-success btn-lg">⚡ Connect</button>
+                    <button id="btnDisconnect" class="btn btn-danger btn-lg hidden">🛑 Disconnect</button>
+                </div>
+            </div>
+
+            <div class="grid metrics-grid">
+                <div class="metric-box">
+                    <span class="metric-label">TUNNEL IP</span>
+                    <span id="metricTunIP" class="metric-val">--</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">PUBLIC IP</span>
+                    <div class="val-with-action">
+                        <span id="metricPublicIP" class="metric-val">--</span>
+                        <button id="btnCheckIP" class="btn-icon" title="Check Public IP">🔄</button>
+                    </div>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">UPTIME</span>
+                    <span id="metricUptime" class="metric-val">00:00:00</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">TRAFFIC (RX / TX)</span>
+                    <span id="metricTraffic" class="metric-val">0 B / 0 B</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- WHOLE-ROUTER GATEWAY TOGGLE -->
+        <section class="card gateway-card">
+            <div class="gateway-header">
+                <div>
+                    <h3>🌐 Whole-Router Wi-Fi / LAN Gateway Mode</h3>
+                    <p class="muted">Direct all phones, laptops, and smart TVs connected to this router through the OpenVPN tunnel via NAT/Masquerade.</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="gatewayToggle">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+            <div class="gateway-footer">
+                <div class="killswitch-option">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="killswitchToggle">
+                        <span>🛡️ Kill Switch (Block traffic if VPN disconnects)</span>
+                    </label>
+                </div>
+                <div id="gatewayRuleBadge" class="badge badge-success">Firewall: Ready</div>
+            </div>
+        </section>
+
+        <!-- PROFILES & CONSOLE GRID -->
+        <div class="grid layout-grid">
+            <!-- PROFILES SECTION -->
+            <section class="card">
+                <div class="card-header">
+                    <h3>📁 Config Profiles (.ovpn)</h3>
+                    <div class="card-actions">
+                        <button id="btnUploadModal" class="btn btn-sm btn-primary">+ Upload / Add</button>
+                    </div>
+                </div>
+                <div class="profile-list-container">
+                    <div id="profileList" class="profile-list">
+                        <div class="empty-state">Loading profiles...</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- LIVE LOGS & DIAGNOSTICS -->
+            <section class="card console-card">
+                <div class="card-header">
+                    <h3>📜 Live OpenVPN Log</h3>
+                    <div class="card-actions">
+                        <button id="btnPing" class="btn btn-sm btn-outline">📶 Ping Test</button>
+                        <button id="btnClearLogs" class="btn btn-sm btn-outline">Clear</button>
+                    </div>
+                </div>
+                <div id="logConsole" class="log-console"></div>
+            </section>
+        </div>
+    </main>
+
+    <!-- UPLOAD / ADD PROFILE MODAL -->
+    <div id="uploadModal" class="modal-overlay hidden">
+        <div class="modal card">
+            <div class="modal-header">
+                <h3>Add OpenVPN Profile</h3>
+                <button class="modal-close" id="btnCloseUpload">&times;</button>
+            </div>
+            <div class="tabs">
+                <button class="tab-btn active" id="tabUploadFile">Upload .ovpn File</button>
+                <button class="tab-btn" id="tabPasteText">Paste Config Content</button>
+            </div>
+            <div id="tabFileContent">
+                <div class="drop-zone" id="dropZone">
+                    <span>📄 Click or Drop .ovpn File Here</span>
+                    <input type="file" id="fileInput" accept=".ovpn" class="hidden">
+                </div>
+                <div id="selectedFileName" class="muted text-center mt-2"></div>
+            </div>
+            <div id="tabTextContent" class="hidden">
+                <input type="text" id="pasteFilename" placeholder="Profile Name (e.g. custom.ovpn)" class="mb-2">
+                <textarea id="pasteConfig" rows="8" placeholder="Paste full .ovpn content here (including <ca>, <cert>, <key>)..."></textarea>
+            </div>
+            <div class="modal-actions">
+                <button id="btnSaveProfile" class="btn btn-primary btn-block">Save Profile</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- VIEW CONFIG CONTENT MODAL -->
+    <div id="viewModal" class="modal-overlay hidden">
+        <div class="modal card modal-large">
+            <div class="modal-header">
+                <h3 id="viewModalTitle">Profile Details</h3>
+                <button class="modal-close" id="btnCloseView">&times;</button>
+            </div>
+            <pre id="viewModalContent" class="code-box"></pre>
+        </div>
+    </div>
+
+    <!-- SETTINGS MODAL -->
+    <div id="settingsModal" class="modal-overlay hidden">
+        <div class="modal card">
+            <div class="modal-header">
+                <h3>⚙️ Settings</h3>
+                <button class="modal-close" id="btnCloseSettings">&times;</button>
+            </div>
+            <form id="settingsForm">
+                <label>Change Web Dashboard Password:</label>
+                <input type="password" id="newPassword" placeholder="New Password (leave empty to keep current)">
+                <div class="mt-3">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="autoConnectSetting">
+                        <span>Auto-Connect on router boot</span>
+                    </label>
+                </div>
+                <div class="modal-actions mt-3">
+                    <button type="submit" class="btn btn-primary btn-block">Save Settings</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
