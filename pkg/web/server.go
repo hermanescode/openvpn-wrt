@@ -654,6 +654,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		currCfg := s.cfg.Get()
+		oldMode := currCfg.RoutingMode
 		err := s.cfg.Update(func(c *config.Config) {
 			if req.RoutingMode != nil {
 				c.RoutingMode = *req.RoutingMode
@@ -666,10 +668,18 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 
-		cfg := s.cfg.Get()
-		// Reapply rules immediately if gateway mode is on
-		if cfg.GatewayMode {
-			_, _ = vpn.SetGatewayEnabled(true, cfg.RoutingMode, cfg.SelectiveRoutes, cfg.BlockedDestinations, cfg.KillSwitch)
+		newCfg := s.cfg.Get()
+
+		// If routing mode changed while connected, restart connection to update OpenVPN pull-filter flags
+		if req.RoutingMode != nil && *req.RoutingMode != oldMode && s.manager.GetState() == vpn.StateConnected {
+			go func() {
+				_ = s.manager.Disconnect()
+				time.Sleep(1 * time.Second)
+				_ = s.manager.Connect(newCfg.ActiveProfile)
+			}()
+		} else if newCfg.GatewayMode {
+			// Reapply rules immediately if gateway mode is on
+			_, _ = vpn.SetGatewayEnabled(true, newCfg.RoutingMode, newCfg.SelectiveRoutes, newCfg.BlockedDestinations, newCfg.KillSwitch)
 		}
 
 		w.Header().Set("Content-Type", "application/json")

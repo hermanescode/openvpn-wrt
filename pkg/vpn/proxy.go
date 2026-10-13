@@ -89,21 +89,50 @@ func (p *ProxyServer) handleConn(clientConn net.Conn) {
 }
 
 func (p *ProxyServer) dialOut(network, targetAddr string) (net.Conn, error) {
-	// Use custom resolver querying 1.1.1.1:53 so local DNS never blocks proxy requests
+	// 1. Try binding directly to local tun interface IP (direct route into VPN tunnel)
+	var localTCP *net.TCPAddr
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if strings.HasPrefix(iface.Name, "tun") {
+				addrs, _ := iface.Addrs()
+				for _, a := range addrs {
+					if ipNet, ok := a.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+						localTCP = &net.TCPAddr{IP: ipNet.IP}
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// In selective mode, default dial goes through WAN. For proxy, we want tunnel egress:
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, netw, addr string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 3 * time.Second}
+			d := net.Dialer{Timeout: 3 * time.Second, LocalAddr: localTCP}
 			return d.DialContext(ctx, "udp", "1.1.1.1:53")
 		},
 	}
 
 	d := &net.Dialer{
+		Timeout:   7 * time.Second,
+		LocalAddr: localTCP,
+		Resolver:  resolver,
+	}
+
+	conn, err := d.Dial(network, targetAddr)
+	if err == nil {
+		return conn, nil
+	}
+
+	// Fallback to default dialer
+	fallbackDialer := &net.Dialer{
 		Timeout:  7 * time.Second,
 		Resolver: resolver,
 	}
-
-	return d.Dial(network, targetAddr)
+	return fallbackDialer.Dial(network, targetAddr)
 }
 
 func (p *ProxyServer) handleSOCKS5(conn net.Conn, br *bufio.Reader) {
