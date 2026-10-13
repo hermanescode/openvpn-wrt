@@ -322,6 +322,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			"alloc_mb":    float64(m.Alloc) / 1024 / 1024,
 			"sys_mb":      float64(m.Sys) / 1024 / 1024,
 			"active_port": s.actualAddr,
+			"proxy_listen": s.cfg.Get().ProxyListen,
 		},
 		"auth": map[string]any{
 			"password_required": s.cfg.Get().WebPassword != "",

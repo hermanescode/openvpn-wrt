@@ -42,6 +42,15 @@ func main() {
 
 	vpnMgr := vpn.NewVPNManager(cfg)
 	webSrv := web.NewServer(cfg, vpnMgr)
+	proxySrv := vpn.NewProxyServer(cfg)
+
+	if cfg.Get().ProxyEnabled {
+		if err := proxySrv.Start(); err != nil {
+			fmt.Printf("Warning: Proxy server failed to start: %v\n", err)
+		} else {
+			fmt.Printf("Mixed Proxy (SOCKS5 + HTTP) listening on %s\n", cfg.Get().ProxyListen)
+		}
+	}
 
 	// Graceful shutdown handling
 	sigChan := make(chan os.Signal, 1)
@@ -51,6 +60,7 @@ func main() {
 		<-sigChan
 		fmt.Println("\nReceived shutdown signal. Cleaning up...")
 		_ = vpnMgr.Disconnect()
+		proxySrv.Stop()
 		if !cfg.Get().KillSwitch {
 			_, _ = vpn.SetGatewayEnabled(false, "", nil, nil, false)
 		}

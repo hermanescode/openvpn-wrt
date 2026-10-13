@@ -16,6 +16,10 @@
 - **🔌 Dynamic Port Detection & Non-Conflicting Default**:
   - Default port set to `:8085` (leaving `:8080` free for FoxyVPN).
   - Automatic port fallback: if `:8085` is in use, automatically binds `:8086`, `:8087`, etc.
+- **⚡ Mixed Proxy Listener (SOCKS5 + HTTP on :1081)**:
+  - Built-in dual protocol proxy on port `1081` (no third-party apps needed on the router).
+  - Routes directly out of `tun0` interface when VPN is connected.
+  - Can be used interchangeably as `socks5://<router-ip>:1081` or `http://<router-ip>:1081` on Telegram, v2rayNG, browsers, etc.
 - **🔐 Password Protected Web Panel**:
   - Constant-time password comparison (`subtle.ConstantTimeCompare`).
   - Safe status polling pattern (no frozen UI / false-logout traps).

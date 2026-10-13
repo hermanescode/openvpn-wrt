@@ -32,6 +32,7 @@
         <div class="header-right">
             <div id="sysMetrics" class="sys-metrics">
                 <span id="sysPort" class="badge badge-port">:8085</span>
+                <span id="sysProxy" class="badge badge-success">Proxy :1081</span>
                 <span id="sysArch" class="badge">ARMv7</span>
                 <span id="sysMem" class="badge">RAM: -- MB</span>
             </div>
@@ -76,6 +77,10 @@
                 <div class="metric-box">
                     <span class="metric-label">TRAFFIC (RX / TX)</span>
                     <span id="metricTraffic" class="metric-val">0 B / 0 B</span>
+                </div>
+                <div class="metric-box">
+                    <span class="metric-label">MIXED PROXY (SOCKS5 / HTTP)</span>
+                    <span id="metricProxyEndpoint" class="metric-val">:1081</span>
                 </div>
             </div>
         </section>

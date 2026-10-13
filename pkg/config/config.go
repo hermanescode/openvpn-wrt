@@ -14,6 +14,8 @@ type Config struct {
 	ConfigsDir          string   `json:"configs_dir"`
 	AutoConnect         bool     `json:"auto_connect"`
 	GatewayMode         bool     `json:"gateway_mode"`
+	ProxyEnabled        bool     `json:"proxy_enabled"`
+	ProxyListen         string   `json:"proxy_listen"`
 	RoutingMode         string   `json:"routing_mode"` // "full" or "selective"
 	SelectiveRoutes     []string `json:"selective_routes"`
 	BlockedDestinations []string `json:"blocked_destinations"`
@@ -29,10 +31,12 @@ func DefaultConfig() *Config {
 	return &Config{
 		WebListen:     ":8085",
 		WebPassword:   "admin",
-		ActiveProfile: "01_UDP_443_FakeQUIC.ovpn",
+		ActiveProfile: "07_UDP_33520_Speed_Optimized.ovpn",
 		ConfigsDir:    "/etc/openvpn-wrt/configs",
 		AutoConnect:   true,
 		GatewayMode:   true,
+		ProxyEnabled:  true,
+		ProxyListen:   "0.0.0.0:1081",
 		RoutingMode:   "full", // "full" = all traffic, "selective" = only designated destinations
 		SelectiveRoutes: []string{
 			"youtube.com",
@@ -73,6 +77,9 @@ func LoadConfig(path string) (*Config, error) {
 
 	if cfg.WebListen == "" || cfg.WebListen == ":8080" {
 		cfg.WebListen = ":8085"
+	}
+	if cfg.ProxyListen == "" {
+		cfg.ProxyListen = "0.0.0.0:1081"
 	}
 	if cfg.ConfigsDir == "" {
 		cfg.ConfigsDir = "/etc/openvpn-wrt/configs"

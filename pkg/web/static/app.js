@@ -101,6 +101,8 @@ const btnCheckIP = document.getElementById('btnCheckIP');
 const sysArch = document.getElementById('sysArch');
 const sysMem = document.getElementById('sysMem');
 const sysPort = document.getElementById('sysPort');
+const sysProxy = document.getElementById('sysProxy');
+const metricProxyEndpoint = document.getElementById('metricProxyEndpoint');
 
 const gatewayToggle = document.getElementById('gatewayToggle');
 const killswitchToggle = document.getElementById('killswitchToggle');
@@ -223,6 +225,11 @@ async function refreshStatus() {
         sysMem.innerText = 'Alloc: ' + (data.system.alloc_mb || 0).toFixed(1) + ' MB';
         if (data.system.active_port) {
             sysPort.innerText = data.system.active_port;
+        }
+        if (data.system.proxy_listen) {
+            const pPort = data.system.proxy_listen.replace('0.0.0.0', '');
+            sysProxy.innerText = 'Proxy ' + pPort;
+            metricProxyEndpoint.innerText = pPort;
         }
     }
 
