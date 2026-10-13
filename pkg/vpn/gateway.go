@@ -127,7 +127,7 @@ ip rule add fwmark 0x55 table 100 2>/dev/null || true
 ip route replace default dev "$TUN_DEV" table 100 2>/dev/null || true
 ip route flush cache 2>/dev/null || true
 
-# Direct static routes for explicit CIDRs/IPs through tun
+# Direct static routes in MAIN routing table for explicit CIDRs/IPs through tun
 %s
 
 # Setup nftables rules for matching destinations
@@ -144,9 +144,10 @@ if command -v nft >/dev/null 2>&1; then
     nft 'add rule inet openvpn_wrt prerouting ip daddr @vpn_routed_ips mark set 0x55'
 
     # Forwarding & NAT for tun
-    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority 0; policy accept; }'
+    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
     nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
     nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
+    nft 'add rule inet openvpn_wrt forward iifname "br-lan" oifname "tun+" accept'
 
     nft 'add chain inet openvpn_wrt postrouting { type nat hook postrouting priority 100; policy accept; }'
     nft 'add rule inet openvpn_wrt postrouting oifname "tun+" masquerade'
@@ -164,6 +165,7 @@ elif command -v iptables >/dev/null 2>&1; then
     iptables -t nat -I POSTROUTING 1 -j OPENVPN_WRT_NAT
     iptables -I forwarding_rule 1 -o tun+ -j ACCEPT 2>/dev/null || true
     iptables -I forwarding_rule 1 -i tun+ -j ACCEPT 2>/dev/null || true
+    iptables -I forwarding_rule 1 -i br-lan -o tun+ -j ACCEPT 2>/dev/null || true
 fi
 `, formatStaticRoutes(sel.IPs), nftBlockedElements, nftSelectiveElements))
 
@@ -265,6 +267,7 @@ func formatStaticRoutes(ips []string) string {
 		ip = strings.TrimSpace(ip)
 		if ip != "" {
 			sb.WriteString(fmt.Sprintf("ip route replace %s dev \"$TUN_DEV\" 2>/dev/null || true\n", ip))
+			sb.WriteString(fmt.Sprintf("ip route replace %s dev \"$TUN_DEV\" table 100 2>/dev/null || true\n", ip))
 		}
 	}
 	return sb.String()
@@ -311,8 +314,14 @@ func setupDnsmasq(selectiveDomains []string, blockedDomains []string, routingMod
 			if d != "" {
 				sb.WriteString(fmt.Sprintf("nftset=/%s/4#inet#openvpn_wrt#vpn_routed_ips\n", d))
 				sb.WriteString(fmt.Sprintf("ipset=/%s/vpn_routed_ips\n", d))
+				// Resolve selective domains using VPN tunnel DNS 1.1.1.1
+				sb.WriteString(fmt.Sprintf("server=/%s/1.1.1.1\n", d))
 			}
 		}
+	} else {
+		// In full mode, forward all DNS to 1.1.1.1
+		sb.WriteString("server=1.1.1.1\n")
+		sb.WriteString("server=8.8.8.8\n")
 	}
 
 	confPath := "/tmp/dnsmasq.d/openvpn_wrt.conf"
@@ -320,6 +329,28 @@ func setupDnsmasq(selectiveDomains []string, blockedDomains []string, routingMod
 		return err
 	}
 
-	_ = exec.Command("sh", "-c", "/etc/init.d/dnsmasq reload 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true").Run()
+	// In selective mode, make sure UCI dnsmasq does NOT override global DNS to 1.1.1.1
+	if routingMode == "selective" {
+		_ = exec.Command("sh", "-c", `
+if command -v uci >/dev/null 2>&1; then
+    uci -q del_list dhcp.@dnsmasq[0].server="1.1.1.1" 2>/dev/null || true
+    uci -q del_list dhcp.@dnsmasq[0].server="8.8.8.8" 2>/dev/null || true
+    uci commit dhcp 2>/dev/null || true
+fi
+/etc/init.d/dnsmasq restart 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true
+`).Run()
+	} else {
+		_ = exec.Command("sh", "-c", `
+if command -v uci >/dev/null 2>&1; then
+    uci -q del_list dhcp.@dnsmasq[0].server="1.1.1.1" 2>/dev/null || true
+    uci -q del_list dhcp.@dnsmasq[0].server="8.8.8.8" 2>/dev/null || true
+    uci -q add_list dhcp.@dnsmasq[0].server="1.1.1.1" 2>/dev/null || true
+    uci -q add_list dhcp.@dnsmasq[0].server="8.8.8.8" 2>/dev/null || true
+    uci commit dhcp 2>/dev/null || true
+fi
+/etc/init.d/dnsmasq restart 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true
+`).Run()
+	}
+
 	return nil
 }
