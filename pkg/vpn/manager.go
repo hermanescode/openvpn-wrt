@@ -190,6 +190,7 @@ func (m *VPNManager) runProcess(profilePath string) {
 		"--config", profilePath,
 		"--status", statusFile, "2",
 		"--writepid", pidFile,
+		"--mssfix", "1300",
 		"--verb", "3",
 		"--suppress-timestamps",
 	}
