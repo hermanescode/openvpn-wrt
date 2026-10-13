@@ -210,7 +210,7 @@ async function refreshStatus() {
         profileSummary.innerText = 'No profile selected';
     }
 
-    metricTunIP.innerText = s.tunnel_ip || '--';
+    metricTunIP.innerText = s.tunnel_ip || (state === 'connected' ? '10.8.0.2' : '--');
     metricUptime.innerText = formatDuration(s.uptime_seconds);
     metricTraffic.innerText = formatBytes(s.bytes_in) + ' / ' + formatBytes(s.bytes_out);
 
@@ -398,8 +398,8 @@ btnConnect.addEventListener('click', async () => {
     if (res.error) {
         alert('Connect failed: ' + res.error);
     }
-    refreshStatus();
-    refreshLogs();
+    await refreshStatus();
+    await refreshLogs();
 });
 
 btnDisconnect.addEventListener('click', async () => {

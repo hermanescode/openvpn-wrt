@@ -222,12 +222,16 @@ func (m *VPNManager) runProcess(profilePath string) {
 	_ = cmd.Wait()
 
 	m.mu.Lock()
-	if m.state != StateDisconnected {
-		m.state = StateDisconnected
-		m.AddLog("OpenVPN process exited.")
-	}
+	m.state = StateDisconnected
+	m.AddLog("OpenVPN process exited.")
 	m.cmd = nil
 	m.mu.Unlock()
+
+	// Clear gateway forwarding rules when OpenVPN process exits so LAN doesn't blackhole
+	cfg := m.cfg.Get()
+	if !cfg.KillSwitch {
+		_, _ = SetGatewayEnabled(false, "", nil, nil, false)
+	}
 }
 
 func (m *VPNManager) analyzeLogLine(line string) {
@@ -367,6 +371,12 @@ func (m *VPNManager) detectTunnelIP() string {
 			}
 		}
 	}
+	// Fallback to reading 'ip -4 addr show dev tun0'
+	out, err := exec.Command("sh", "-c", "ip -4 addr show | grep -A2 'tun[0-9]*' | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1").Output()
+	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		return strings.TrimSpace(string(out))
+	}
+
 	return ""
 }
 
