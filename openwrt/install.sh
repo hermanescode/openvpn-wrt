@@ -65,12 +65,12 @@ elif command -v uclient-fetch >/dev/null 2>&1; then
 fi
 
 if [ ! -s "$TMP_BIN" ]; then
-    echo "Direct GitHub release download failed or release not yet published."
-    echo "If building locally or transferring via scp, place binary at $INSTALL_DIR/openvpn-wrt"
-else
-    mv "$TMP_BIN" "$INSTALL_DIR/openvpn-wrt"
-    chmod +x "$INSTALL_DIR/openvpn-wrt"
+    echo "Direct download failed or release not yet published."
+    exit 1
 fi
+
+mv "$TMP_BIN" "$INSTALL_DIR/openvpn-wrt"
+chmod +x "$INSTALL_DIR/openvpn-wrt"
 
 # 4. Setup Default Config if missing
 if [ ! -f "$CONF_DIR/config.json" ]; then
@@ -132,7 +132,10 @@ chmod +x "$INIT_DIR/openvpn-wrt"
 "$INIT_DIR/openvpn-wrt" enable
 "$INIT_DIR/openvpn-wrt" restart
 
-ROUTER_IP=$(ip -4 addr show br-lan 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1 || echo "192.168.1.1")
+ROUTER_IP=$(ip -4 addr show br-lan 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1)
+if [ -z "$ROUTER_IP" ]; then
+    ROUTER_IP=$(uci get network.lan.ipaddr 2>/dev/null || echo "192.168.1.1")
+fi
 
 PORT=$(cat /tmp/openvpn-wrt.port 2>/dev/null || echo ":8085")
 echo "===================================================="
