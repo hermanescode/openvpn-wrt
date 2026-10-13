@@ -2,6 +2,7 @@ package vpn
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,14 @@ import (
 
 	"github.com/hermanescode/openvpn-wrt/pkg/config"
 )
+
+type TestResult struct {
+	Profile   string `json:"profile"`
+	Success   bool   `json:"success"`
+	LatencyMs int64  `json:"latency_ms"`
+	PingMs    int64  `json:"ping_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
 
 type ConnectionState string
 
@@ -512,3 +522,175 @@ func (m *VPNManager) CheckPublicIP() (string, error) {
 	}
 	return strings.TrimSpace(string(body)), nil
 }
+
+func measureHostPing(host string) int64 {
+	if host == "" {
+		return -1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "2", host).Output()
+	if err != nil {
+		return -1
+	}
+	re := regexp.MustCompile(`time=([0-9.]+)\s*ms`)
+	match := re.FindStringSubmatch(string(out))
+	if len(match) >= 2 {
+		if val, err := strconv.ParseFloat(match[1], 64); err == nil {
+			return int64(val)
+		}
+	}
+	return -1
+}
+
+func extractProfileRemote(path string) (string, string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", ""
+	}
+	defer f.Close()
+
+	var host, proto string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "remote ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				host = parts[1]
+			}
+		} else if strings.HasPrefix(line, "proto ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				proto = strings.ToUpper(parts[1])
+			}
+		}
+		if host != "" && proto != "" {
+			break
+		}
+	}
+	return host, proto
+}
+
+func (m *VPNManager) TestProfile(profileName string) TestResult {
+	profilePath := filepath.Join(m.cfg.Get().ConfigsDir, profileName)
+	if _, err := os.Stat(profilePath); err != nil {
+		return TestResult{Profile: profileName, Success: false, Error: "Profile file not found"}
+	}
+
+	remoteHost, _ := extractProfileRemote(profilePath)
+	pingVal := measureHostPing(remoteHost)
+
+	// Isolated test with OpenVPN:
+	// --route-noexec --ifconfig-noexec --connect-retry-max 1 --connect-timeout 4
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	tmpPid := fmt.Sprintf("/tmp/ovpn_test_%d.pid", time.Now().UnixNano())
+	defer os.Remove(tmpPid)
+
+	args := []string{
+		"--config", profilePath,
+		"--verb", "3",
+		"--route-noexec",
+		"--ifconfig-noexec",
+		"--connect-retry-max", "1",
+		"--connect-timeout", "4",
+		"--writepid", tmpPid,
+		"--nobind",
+		"--dev-type", "tun",
+		"--suppress-timestamps",
+	}
+
+	startTime := time.Now()
+	cmd := exec.CommandContext(ctx, "openvpn", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return TestResult{Profile: profileName, Success: false, Error: err.Error()}
+	}
+
+	if err := cmd.Start(); err != nil {
+		return TestResult{Profile: profileName, Success: false, Error: "Cannot start openvpn: " + err.Error()}
+	}
+
+	success := false
+	var errMsg string
+	done := make(chan struct{})
+
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "Initialization Sequence Completed") {
+				success = true
+				break
+			}
+			if strings.Contains(line, "AUTH_FAILED") {
+				errMsg = "Auth Failed"
+				break
+			}
+			if strings.Contains(line, "Connection refused") {
+				errMsg = "Connection Refused"
+				break
+			}
+			if strings.Contains(line, "TLS Error") {
+				errMsg = "TLS Handshake Failed"
+			}
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if errMsg == "" {
+			errMsg = "Connection Timeout"
+		}
+	}
+
+	elapsedMs := time.Since(startTime).Milliseconds()
+
+	// Guarantee that the test process is stopped immediately!
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	_ = cmd.Wait()
+
+	if success {
+		finalLatency := pingVal
+		if finalLatency <= 0 {
+			finalLatency = elapsedMs
+		}
+		return TestResult{
+			Profile:   profileName,
+			Success:   true,
+			LatencyMs: finalLatency,
+			PingMs:    pingVal,
+		}
+	}
+
+	if errMsg == "" {
+		errMsg = "Test failed"
+	}
+	return TestResult{
+		Profile: profileName,
+		Success: false,
+		PingMs:  pingVal,
+		Error:   errMsg,
+	}
+}
+
+func (m *VPNManager) TestAllProfiles() []TestResult {
+	profiles, err := m.ListProfiles()
+	if err != nil {
+		return nil
+	}
+	results := make([]TestResult, 0, len(profiles))
+	for _, p := range profiles {
+		res := m.TestProfile(p.Name)
+		results = append(results, res)
+	}
+	return results
+}
+

@@ -2,6 +2,7 @@
 let sessionToken = localStorage.getItem('openvpn_token') || '';
 let selectedFile = null;
 let currentProfiles = [];
+let testResults = {};
 let statusInterval = null;
 
 // Fallback clipboard copy for plain HTTP LAN environments
@@ -110,6 +111,7 @@ const modeSelective = document.getElementById('modeSelective');
 const selectiveRoutesInput = document.getElementById('selectiveRoutesInput');
 const blockedRoutesInput = document.getElementById('blockedRoutesInput');
 const btnSaveRules = document.getElementById('btnSaveRules');
+const btnTestAll = document.getElementById('btnTestAll');
 
 const profileList = document.getElementById('profileList');
 const logConsole = document.getElementById('logConsole');
@@ -245,6 +247,58 @@ async function refreshLogs() {
 }
 
 // Profiles
+function renderTestBadgeHtml(name) {
+    const t = testResults[name];
+    if (!t) return '';
+    if (t.testing) {
+        return '<span class="badge badge-amber">⏳ Testing...</span>';
+    }
+    if (t.success) {
+        return `<span class="badge badge-success">🟢 ${t.latency_ms} ms</span>`;
+    }
+    return `<span class="badge badge-danger">🔴 ${escapeHtml(t.error || 'Failed')}</span>`;
+}
+
+function updateTestBadgeDom(name) {
+    const el = document.getElementById('test-badge-' + btoa(name).replace(/=/g, ''));
+    if (el) {
+        el.innerHTML = renderTestBadgeHtml(name);
+    }
+}
+
+async function runSingleTest(name) {
+    testResults[name] = { testing: true };
+    updateTestBadgeDom(name);
+
+    const res = await apiCall('/api/profiles/test-one', 'POST', { profile: name });
+    testResults[name] = res;
+    updateTestBadgeDom(name);
+}
+
+btnTestAll.addEventListener('click', async () => {
+    if (currentProfiles.length === 0) {
+        alert('No profiles to test.');
+        return;
+    }
+
+    btnTestAll.disabled = true;
+    let successCount = 0;
+
+    for (let i = 0; i < currentProfiles.length; i++) {
+        const p = currentProfiles[i];
+        btnTestAll.innerText = `⏳ Testing (${i + 1}/${currentProfiles.length})...`;
+        await runSingleTest(p.name);
+        if (testResults[p.name] && testResults[p.name].success) {
+            successCount++;
+        }
+    }
+
+    btnTestAll.disabled = false;
+    btnTestAll.innerText = '🧪 Test All';
+
+    alert(`Batch Test Complete!\n\nTotal Profiles: ${currentProfiles.length}\n✅ Working: ${successCount}\n❌ Failed: ${currentProfiles.length - successCount}\n\nNote: Active connection was not changed.`);
+});
+
 async function refreshProfiles() {
     const data = await apiCall('/api/profiles');
     if (!data || !data.profiles) return;
@@ -264,12 +318,18 @@ async function refreshProfiles() {
         let meta = formatBytes(p.size);
         if (p.remote) meta += ' | ' + p.remote + ' (' + (p.proto || 'UDP') + ')';
 
+        const safeId = 'test-badge-' + btoa(p.name).replace(/=/g, '');
+
         item.innerHTML = `
             <div class="profile-info">
-                <span class="profile-name">${p.is_active ? '⭐ ' : ''}${escapeHtml(p.name)}</span>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="profile-name">${p.is_active ? '⭐ ' : ''}${escapeHtml(p.name)}</span>
+                    <span id="${safeId}">${renderTestBadgeHtml(p.name)}</span>
+                </div>
                 <span class="profile-meta">${meta}</span>
             </div>
             <div class="profile-actions">
+                <button class="btn btn-sm btn-outline btn-test" title="Test connectivity & ping">🧪</button>
                 <button class="btn btn-sm btn-outline btn-view" title="View config">👁️</button>
                 <button class="btn btn-sm ${p.is_active ? 'btn-success' : 'btn-outline'} btn-select">
                     ${p.is_active ? 'Selected' : 'Use'}
@@ -277,6 +337,11 @@ async function refreshProfiles() {
                 <button class="btn btn-sm btn-outline btn-delete" title="Delete">🗑️</button>
             </div>
         `;
+
+        item.querySelector('.btn-test').addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await runSingleTest(p.name);
+        });
 
         item.querySelector('.btn-select').addEventListener('click', async (e) => {
             e.stopPropagation();

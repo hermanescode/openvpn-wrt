@@ -68,6 +68,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/profiles/upload", s.authMiddleware(s.handleProfileUpload))
 	mux.HandleFunc("/api/profiles/delete", s.authMiddleware(s.handleProfileDelete))
 	mux.HandleFunc("/api/profiles/content", s.handleProfileContent)
+	mux.HandleFunc("/api/profiles/test-one", s.authMiddleware(s.handleProfileTestOne))
+	mux.HandleFunc("/api/profiles/test-all", s.authMiddleware(s.handleProfileTestAll))
 	mux.HandleFunc("/api/gateway/toggle", s.authMiddleware(s.handleGatewayToggle))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
 
@@ -473,6 +475,39 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+}
+
+func (s *Server) handleProfileTestOne(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Profile == "" {
+		http.Error(w, "Profile required", http.StatusBadRequest)
+		return
+	}
+
+	res := s.manager.TestProfile(req.Profile)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleProfileTestAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	results := s.manager.TestAllProfiles()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"results": results,
+	})
 }
 
 func (s *Server) handleProfileContent(w http.ResponseWriter, r *http.Request) {

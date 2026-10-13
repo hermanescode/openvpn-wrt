@@ -23,6 +23,11 @@
 - **📁 Multi-Profile Manager (.ovpn)**:
   - Drag-and-drop `.ovpn` upload or direct config text pasting.
   - 1-click active profile switching.
+  - **🧪 Sequential Batch & Single Profile Testing (Test All)**:
+    - Dedicated **🧪 Test All** button tests every profile one-by-one in sequence.
+    - Measures connection capability and latency / ping (ms) without touching or changing your active VPN connection.
+    - Runs in an isolated test environment (`--route-noexec --ifconfig-noexec`) so router routing is never interrupted.
+    - Real-time live status badges next to each profile: `🟢 145 ms` or `🔴 Failed (Timeout / Handshake error)`.
   - View config file contents and delete profiles directly in the dashboard.
   - Includes **8 optimized anti-censorship profiles** out-of-the-box (FakeQUIC, FakeNTP, DoT, Anti-DPI Fragmented, Cloudflare SSL, Fake HTTP).
 - **🚀 Embedded Memory & CPU Optimized**:
