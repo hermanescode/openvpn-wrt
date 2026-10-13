@@ -14,7 +14,7 @@ func IsGatewayEnabled() bool {
 	checkCmd := `
 if command -v uci >/dev/null 2>&1 && uci get firewall.@zone[1].device 2>/dev/null | grep -q "tun+"; then
     echo 1
-elif command -v nft >/dev/null 2>&1 && nft list table inet fw4 2>/dev/null | grep -q "tun+"; then
+elif command -v nft >/dev/null 2>&1 && nft list table inet openvpn_wrt 2>/dev/null | grep -q "openvpn_wrt"; then
     echo 1
 elif command -v iptables >/dev/null 2>&1 && iptables -t nat -L POSTROUTING 2>/dev/null | grep -q "tun+"; then
     echo 1
@@ -76,7 +76,7 @@ func parseRouteEntries(entries []string) ParsedRoutes {
 }
 
 // SetGatewayEnabled configures or clears the OpenWrt firewall rules to route
-// router & Wi-Fi LAN clients through OpenVPN using native OpenWrt UCI firewall zone integration.
+// router & Wi-Fi LAN clients through OpenVPN, supporting Full Tunnel and Selective Routing.
 func SetGatewayEnabled(enable bool, routingMode string, selectiveRoutes []string, blockedRoutes []string, killSwitch bool) (string, error) {
 	if enable {
 		_ = exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run()
@@ -84,17 +84,89 @@ func SetGatewayEnabled(enable bool, routingMode string, selectiveRoutes []string
 		sel := parseRouteEntries(selectiveRoutes)
 		blk := parseRouteEntries(blockedRoutes)
 
-		_ = setupDnsmasq(sel.Domains, blk.Domains)
+		_ = setupDnsmasq(sel.Domains, blk.Domains, routingMode)
 
-		cmd := `
-# 1. Enable IP forwarding in kernel
+		nftBlockedElements := formatNFTElements("blocked_ips", blk.IPs)
+		nftSelectiveElements := formatNFTElements("vpn_routed_ips", sel.IPs)
+
+		var script strings.Builder
+		script.WriteString(`
+# 1. Kernel IP Forwarding
 sysctl -w net.ipv4.ip_forward=1 2>/dev/null || true
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 
-# 2. Native OpenWrt UCI Firewall Zone integration:
-# Add 'tun+' to OpenWrt's WAN zone so OpenWrt natively handles LAN->WAN forwarding, MASQUERADE, and MSS clamping
+# Find tun device
+TUN_DEV=$(ip -o link show | grep -o 'tun[0-9]*' | head -n1 || echo 'tun0')
+`)
+
+		if routingMode == "selective" {
+			// ==========================================
+			// SELECTIVE ROUTING MODE (Split Tunneling)
+			// ==========================================
+			script.WriteString(fmt.Sprintf(`
+# Clean any previous WAN zone addition of tun+ so default traffic stays on normal WAN
 if command -v uci >/dev/null 2>&1; then
-    # Find the wan zone index or name
+    for i in 0 1 2 3; do
+        if [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ]; then
+            uci -q del_list "firewall.@zone[$i].device=tun+" 2>/dev/null || true
+            uci commit firewall 2>/dev/null || true
+            break
+        fi
+    done
+fi
+
+# Setup policy routing table 100 for fwmark 0x55
+ip rule del fwmark 0x55 table 100 2>/dev/null || true
+ip rule add fwmark 0x55 table 100 2>/dev/null || true
+ip route replace default dev "$TUN_DEV" table 100 2>/dev/null || true
+ip route flush cache 2>/dev/null || true
+
+# Direct static routes for explicit CIDRs/IPs through tun
+%s
+
+# Setup nftables / ipset marks for matching destinations
+if command -v nft >/dev/null 2>&1; then
+    nft add table inet openvpn_wrt 2>/dev/null || true
+    nft flush table inet openvpn_wrt 2>/dev/null || true
+    nft 'add set inet openvpn_wrt blocked_ips { type ipv4_addr; flags interval; }' 2>/dev/null || true
+    nft 'add set inet openvpn_wrt vpn_routed_ips { type ipv4_addr; flags interval; }' 2>/dev/null || true
+%s
+%s
+    # Prerouting: Mark packets destined to selective IPs
+    nft 'add chain inet openvpn_wrt prerouting { type filter hook prerouting priority -150; policy accept; }'
+    nft 'add rule inet openvpn_wrt prerouting ip daddr @blocked_ips drop'
+    nft 'add rule inet openvpn_wrt prerouting iifname "br-lan" ip daddr @vpn_routed_ips mark set 0x55'
+
+    # Forwarding & NAT for tun
+    nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
+    nft 'add rule inet openvpn_wrt forward oifname "tun+" accept'
+    nft 'add rule inet openvpn_wrt forward iifname "tun+" ct state { established, related } accept'
+
+    nft 'add chain inet openvpn_wrt postrouting { type nat hook postrouting priority 100; policy accept; }'
+    nft 'add rule inet openvpn_wrt postrouting oifname "tun+" masquerade'
+    
+    nft 'add chain inet openvpn_wrt mangle_forward { type filter hook forward priority mangle; policy accept; }'
+    nft 'add rule inet openvpn_wrt mangle_forward oifname "tun+" tcp flags syn tcp option maxseg size set rt mtu'
+elif command -v iptables >/dev/null 2>&1; then
+    iptables -t mangle -D PREROUTING -m set --match-set vpn_routed_ips dst -j MARK --set-mark 0x55 2>/dev/null || true
+    iptables -t mangle -A PREROUTING -m set --match-set vpn_routed_ips dst -j MARK --set-mark 0x55
+
+    iptables -t nat -N OPENVPN_WRT_NAT 2>/dev/null || iptables -t nat -F OPENVPN_WRT_NAT
+    iptables -t nat -A OPENVPN_WRT_NAT -o tun+ -j MASQUERADE
+    iptables -t nat -D POSTROUTING -j OPENVPN_WRT_NAT 2>/dev/null || true
+    iptables -t nat -I POSTROUTING 1 -j OPENVPN_WRT_NAT
+    iptables -I forwarding_rule 1 -o tun+ -j ACCEPT 2>/dev/null || true
+    iptables -I forwarding_rule 1 -i tun+ -j ACCEPT 2>/dev/null || true
+fi
+`, formatStaticRoutes(sel.IPs), nftBlockedElements, nftSelectiveElements))
+
+		} else {
+			// ==========================================
+			// FULL TUNNEL MODE (Route ALL traffic via VPN)
+			// ==========================================
+			script.WriteString(`
+# Add 'tun+' to OpenWrt's WAN zone
+if command -v uci >/dev/null 2>&1; then
     WAN_ZONE=""
     for i in 0 1 2 3; do
         if [ "$(uci -q get firewall.@zone[$i].name)" = "wan" ]; then
@@ -110,16 +182,8 @@ if command -v uci >/dev/null 2>&1; then
     fi
 fi
 
-# 3. Direct fw4 (nftables) rules insertion as guaranteed fallback
+# Fallback nftables rules
 if command -v nft >/dev/null 2>&1; then
-    # Check if fw4 table exists
-    if nft list table inet fw4 >/dev/null 2>&1; then
-        nft add rule inet fw4 forward oifname "tun+" accept 2>/dev/null || true
-        nft add rule inet fw4 forward iifname "tun+" accept 2>/dev/null || true
-        nft add rule inet fw4 srcnat oifname "tun+" masquerade 2>/dev/null || true
-    fi
-
-    # Standalone table fallback
     nft add table inet openvpn_wrt 2>/dev/null || true
     nft flush table inet openvpn_wrt 2>/dev/null || true
     nft 'add chain inet openvpn_wrt forward { type filter hook forward priority -5; policy accept; }'
@@ -130,32 +194,29 @@ if command -v nft >/dev/null 2>&1; then
     nft 'add rule inet openvpn_wrt postrouting oifname "tun+" masquerade'
     nft 'add chain inet openvpn_wrt mangle_forward { type filter hook forward priority mangle; policy accept; }'
     nft 'add rule inet openvpn_wrt mangle_forward oifname "tun+" tcp flags syn tcp option maxseg size set rt mtu'
-    nft 'add rule inet openvpn_wrt mangle_forward iifname "tun+" tcp flags syn tcp option maxseg size set rt mtu'
 fi
 
-# 4. Direct fw3 (iptables) rules insertion
+# Fallback iptables rules
 if command -v iptables >/dev/null 2>&1; then
     iptables -t nat -N OPENVPN_WRT_NAT 2>/dev/null || iptables -t nat -F OPENVPN_WRT_NAT
     iptables -t nat -A OPENVPN_WRT_NAT -o tun+ -j MASQUERADE
     iptables -t nat -D POSTROUTING -j OPENVPN_WRT_NAT 2>/dev/null || true
     iptables -t nat -I POSTROUTING 1 -j OPENVPN_WRT_NAT
-
     iptables -I forwarding_rule 1 -o tun+ -j ACCEPT 2>/dev/null || true
     iptables -I forwarding_rule 1 -i tun+ -j ACCEPT 2>/dev/null || true
-    iptables -t nat -I postrouting_rule 1 -o tun+ -j MASQUERADE 2>/dev/null || true
-
-    iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
-    iptables -t mangle -I FORWARD 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
 fi
+`)
+		}
 
-echo "Firewall rules successfully applied"
-`
-		out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+		out, err := exec.Command("sh", "-c", script.String()).CombinedOutput()
 		return string(out), err
 	}
 
 	// Teardown
 	teardownCmd := `
+ip rule del fwmark 0x55 table 100 2>/dev/null || true
+ip route flush table 100 2>/dev/null || true
+
 # Remove tun+ from OpenWrt UCI WAN zone
 if command -v uci >/dev/null 2>&1; then
     for i in 0 1 2 3; do
@@ -180,7 +241,7 @@ if command -v iptables >/dev/null 2>&1; then
     iptables -t nat -X OPENVPN_WRT_NAT 2>/dev/null || true
     iptables -D forwarding_rule -o tun+ -j ACCEPT 2>/dev/null || true
     iptables -D forwarding_rule -i tun+ -j ACCEPT 2>/dev/null || true
-    iptables -t nat -D postrouting_rule -o tun+ -j MASQUERADE 2>/dev/null || true
+    iptables -t mangle -D PREROUTING -m set --match-set vpn_routed_ips dst -j MARK --set-mark 0x55 2>/dev/null || true
 fi
 
 # Clean dnsmasq
@@ -191,7 +252,18 @@ rm -f /tmp/dnsmasq.d/openvpn_wrt.conf
 	return string(out), err
 }
 
-func formatNFTSetElements(ips []string) string {
+func formatStaticRoutes(ips []string) string {
+	var sb strings.Builder
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			sb.WriteString(fmt.Sprintf("ip route replace %s dev \"$TUN_DEV\" 2>/dev/null || true\n", ip))
+		}
+	}
+	return sb.String()
+}
+
+func formatNFTElements(setName string, ips []string) string {
 	if len(ips) == 0 {
 		return ""
 	}
@@ -207,19 +279,15 @@ func formatNFTSetElements(ips []string) string {
 	if len(valid) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("    nft 'add element inet openvpn_wrt vpn_routed_ips { %s }' 2>/dev/null || true", strings.Join(valid, ", "))
+	return fmt.Sprintf("    nft 'add element inet openvpn_wrt %s { %s }' 2>/dev/null || true", setName, strings.Join(valid, ", "))
 }
 
-func setupDnsmasq(selectiveDomains []string, blockedDomains []string) error {
+func setupDnsmasq(selectiveDomains []string, blockedDomains []string, routingMode string) error {
 	dir := "/tmp/dnsmasq.d"
 	_ = os.MkdirAll(dir, 0755)
 
 	var sb strings.Builder
 	sb.WriteString("# Generated by openvpn-wrt\n")
-
-	// Upstream DNS servers through VPN tunnel
-	sb.WriteString("server=1.1.1.1\n")
-	sb.WriteString("server=8.8.8.8\n")
 
 	// Blocked domains return 0.0.0.0
 	for _, d := range blockedDomains {
@@ -229,12 +297,14 @@ func setupDnsmasq(selectiveDomains []string, blockedDomains []string) error {
 		}
 	}
 
-	// Selective domains populate nftset / ipset
-	for _, d := range selectiveDomains {
-		d = strings.TrimSpace(d)
-		if d != "" {
-			sb.WriteString(fmt.Sprintf("nftset=/%s/4#inet#openvpn_wrt#vpn_routed_ips\n", d))
-			sb.WriteString(fmt.Sprintf("ipset=/%s/vpn_routed_ips\n", d))
+	if routingMode == "selective" {
+		// Populate nftset and ipset for selective domains
+		for _, d := range selectiveDomains {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				sb.WriteString(fmt.Sprintf("nftset=/%s/4#inet#openvpn_wrt#vpn_routed_ips\n", d))
+				sb.WriteString(fmt.Sprintf("ipset=/%s/vpn_routed_ips\n", d))
+			}
 		}
 	}
 
@@ -243,17 +313,6 @@ func setupDnsmasq(selectiveDomains []string, blockedDomains []string) error {
 		return err
 	}
 
-	// Also tell UCI dnsmasq to forward to 1.1.1.1 and 8.8.8.8
-	_ = exec.Command("sh", "-c", `
-if command -v uci >/dev/null 2>&1; then
-    uci -q del_list dhcp.@dnsmasq[0].server="1.1.1.1" 2>/dev/null || true
-    uci -q del_list dhcp.@dnsmasq[0].server="8.8.8.8" 2>/dev/null || true
-    uci -q add_list dhcp.@dnsmasq[0].server="1.1.1.1" 2>/dev/null || true
-    uci -q add_list dhcp.@dnsmasq[0].server="8.8.8.8" 2>/dev/null || true
-    uci commit dhcp 2>/dev/null || true
-fi
-/etc/init.d/dnsmasq restart 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true
-`).Run()
-
+	_ = exec.Command("sh", "-c", "/etc/init.d/dnsmasq reload 2>/dev/null || killall -HUP dnsmasq 2>/dev/null || true").Run()
 	return nil
 }

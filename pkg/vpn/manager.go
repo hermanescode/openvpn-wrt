@@ -195,6 +195,13 @@ func (m *VPNManager) runProcess(profilePath string) {
 		"--suppress-timestamps",
 	}
 
+	cfg := m.cfg.Get()
+	if cfg.RoutingMode == "selective" {
+		// In selective mode, do NOT pull default gateway redirect from server!
+		// Let OpenVPN only bring up tun0 and its subnet, while our firewall routes designated targets.
+		args = append(args, "--pull-filter", "ignore", "redirect-gateway")
+	}
+
 	cmd := exec.Command("openvpn", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -228,8 +235,8 @@ func (m *VPNManager) runProcess(profilePath string) {
 	m.mu.Unlock()
 
 	// Clear gateway forwarding rules when OpenVPN process exits so LAN doesn't blackhole
-	cfg := m.cfg.Get()
-	if !cfg.KillSwitch {
+	exitCfg := m.cfg.Get()
+	if !exitCfg.KillSwitch {
 		_, _ = SetGatewayEnabled(false, "", nil, nil, false)
 	}
 }
