@@ -410,48 +410,94 @@ func (s *Server) handleProfileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contentType := r.Header.Get("Content-Type")
-	var filename string
-	var content []byte
+	w.Header().Set("Content-Type", "application/json")
 
 	if strings.Contains(contentType, "multipart/form-data") {
-		err := r.ParseMultipartForm(10 << 20)
+		err := r.ParseMultipartForm(50 << 20) // Up to 50MB
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
 			return
 		}
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, "file field required", http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
-		filename = header.Filename
-		content, _ = io.ReadAll(file)
-	} else {
-		var req struct {
-			Filename string `json:"filename"`
-			Content  string `json:"content"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		filename = req.Filename
-		content = []byte(req.Content)
-	}
 
-	if filename == "" || len(content) == 0 {
-		http.Error(w, "Filename and content required", http.StatusBadRequest)
+		// Support multiple files from 'files' or single from 'file'
+		var saved []string
+		form := r.MultipartForm
+		if form != nil && form.File != nil {
+			for _, headers := range form.File {
+				for _, header := range headers {
+					if !strings.HasSuffix(strings.ToLower(header.Filename), ".ovpn") {
+						continue
+					}
+					f, err := header.Open()
+					if err != nil {
+						continue
+					}
+					data, err := io.ReadAll(f)
+					f.Close()
+					if err == nil && len(data) > 0 {
+						if err := s.manager.SaveProfile(header.Filename, data); err == nil {
+							saved = append(saved, header.Filename)
+						}
+					}
+				}
+			}
+		}
+
+		if len(saved) == 0 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false,
+				"error":   "No valid .ovpn files uploaded",
+			})
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"saved":   saved,
+			"count":   len(saved),
+		})
 		return
 	}
 
-	err := s.manager.SaveProfile(filename, content)
-	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
+	// JSON payload fallback (single or multiple)
+	var req struct {
+		Filename string `json:"filename"`
+		Content  string `json:"content"`
+		Profiles []struct {
+			Filename string `json:"filename"`
+			Content  string `json:"content"`
+		} `json:"profiles"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
 		return
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "filename": filename})
+
+	var saved []string
+	if len(req.Profiles) > 0 {
+		for _, p := range req.Profiles {
+			if p.Filename != "" && p.Content != "" {
+				if err := s.manager.SaveProfile(p.Filename, []byte(p.Content)); err == nil {
+					saved = append(saved, p.Filename)
+				}
+			}
+		}
+	} else if req.Filename != "" && req.Content != "" {
+		if err := s.manager.SaveProfile(req.Filename, []byte(req.Content)); err == nil {
+			saved = append(saved, req.Filename)
+		}
+	}
+
+	if len(saved) == 0 {
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "No valid profile content provided"})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"saved":   saved,
+		"count":   len(saved),
+	})
 }
 
 func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {

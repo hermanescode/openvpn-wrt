@@ -22,6 +22,7 @@
   - Change password directly from the Web UI.
 - **📁 Multi-Profile Manager (.ovpn)**:
   - Drag-and-drop `.ovpn` upload or direct config text pasting.
+  - **📦 Batch Multi-File Upload**: Select or drag-and-drop multiple `.ovpn` files simultaneously to import them all in one click.
   - 1-click active profile switching.
   - **🧪 Sequential Batch & Single Profile Testing (Test All)**:
     - Dedicated **🧪 Test All** button tests every profile one-by-one in sequence.

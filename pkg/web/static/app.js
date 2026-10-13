@@ -469,12 +469,15 @@ btnClearLogs.addEventListener('click', async () => {
 });
 
 // Upload Modal Logic
+let selectedFiles = [];
+
 btnUploadModal.addEventListener('click', () => {
     uploadModal.classList.remove('hidden');
-    selectedFile = null;
+    selectedFiles = [];
     selectedFileName.innerText = '';
     pasteFilename.value = '';
     pasteConfig.value = '';
+    fileInput.value = '';
 });
 btnCloseUpload.addEventListener('click', () => uploadModal.classList.add('hidden'));
 
@@ -495,8 +498,8 @@ tabPasteText.addEventListener('click', () => {
 dropZone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
-        selectedFile = e.target.files[0];
-        selectedFileName.innerText = 'Selected: ' + selectedFile.name;
+        selectedFiles = Array.from(e.target.files);
+        updateSelectedFilesLabel();
     }
 });
 
@@ -513,23 +516,43 @@ dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropZone.style.borderColor = 'var(--border-color)';
     if (e.dataTransfer.files.length > 0) {
-        selectedFile = e.dataTransfer.files[0];
-        selectedFileName.innerText = 'Selected: ' + selectedFile.name;
+        selectedFiles = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.ovpn'));
+        updateSelectedFilesLabel();
     }
 });
 
+function updateSelectedFilesLabel() {
+    if (selectedFiles.length === 1) {
+        selectedFileName.innerText = 'Selected: ' + selectedFiles[0].name;
+    } else if (selectedFiles.length > 1) {
+        selectedFileName.innerText = `Selected ${selectedFiles.length} files: ` + selectedFiles.map(f => f.name).join(', ');
+    } else {
+        selectedFileName.innerText = '';
+    }
+}
+
 btnSaveProfile.addEventListener('click', async () => {
     if (tabUploadFile.classList.contains('active')) {
-        if (!selectedFile) {
-            alert('Please select a .ovpn file');
+        if (!selectedFiles || selectedFiles.length === 0) {
+            alert('Please select one or more .ovpn files');
             return;
         }
+        btnSaveProfile.disabled = true;
+        btnSaveProfile.innerText = 'Uploading...';
+
         const formData = new FormData();
-        formData.append('file', selectedFile);
+        selectedFiles.forEach(f => {
+            formData.append('files', f);
+        });
+
         const res = await apiCall('/api/profiles/upload', 'POST', formData);
+        btnSaveProfile.disabled = false;
+        btnSaveProfile.innerText = 'Save Profile';
+
         if (res.success) {
             uploadModal.classList.add('hidden');
             refreshProfiles();
+            alert(`Successfully added ${res.count || selectedFiles.length} profile(s)!`);
         } else {
             alert('Upload failed: ' + (res.error || 'Unknown error'));
         }
@@ -540,7 +563,12 @@ btnSaveProfile.addEventListener('click', async () => {
             alert('Please provide both profile name and config content');
             return;
         }
+        btnSaveProfile.disabled = true;
+        btnSaveProfile.innerText = 'Saving...';
         const res = await apiCall('/api/profiles/upload', 'POST', { filename: fn, content: cnt });
+        btnSaveProfile.disabled = false;
+        btnSaveProfile.innerText = 'Save Profile';
+
         if (res.success) {
             uploadModal.classList.add('hidden');
             refreshProfiles();
