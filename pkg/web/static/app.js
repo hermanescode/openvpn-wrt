@@ -116,6 +116,7 @@ const btnTestAll = document.getElementById('btnTestAll');
 const profileList = document.getElementById('profileList');
 const logConsole = document.getElementById('logConsole');
 const btnClearLogs = document.getElementById('btnClearLogs');
+const btnCopyLogs = document.getElementById('btnCopyLogs');
 const btnPing = document.getElementById('btnPing');
 
 // Modals
@@ -462,10 +463,24 @@ btnPing.addEventListener('click', async () => {
     }
 });
 
-// Clear Logs
+// Clear & Copy Logs
 btnClearLogs.addEventListener('click', async () => {
     await apiCall('/api/logs/clear', 'POST');
     logConsole.innerText = '';
+});
+
+btnCopyLogs.addEventListener('click', () => {
+    const text = logConsole.innerText || '';
+    if (!text.trim()) {
+        alert('Log is currently empty.');
+        return;
+    }
+    copyToClipboard(text);
+    const orig = btnCopyLogs.innerText;
+    btnCopyLogs.innerText = '✅ Copied!';
+    setTimeout(() => {
+        btnCopyLogs.innerText = orig;
+    }, 2000);
 });
 
 // Upload Modal Logic
